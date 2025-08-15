@@ -14,14 +14,6 @@ import json
 
 
 # %%
-
-#def init_waits(driver):
-#    # Define waits with clear names for different purposes
-#    very_short_wait = WebDriverWait(driver, 2)
-#    short_wait = WebDriverWait(driver, 10)
-#    long_wait = WebDriverWait(driver, 60)
-#    return very_short_wait, short_wait, long_wait
-
 def complete_setup(driver, short_wait):
 
     # --- Step 1: Click through the FIRST dialog ("Limitations") ---
@@ -85,8 +77,6 @@ def complete_setup(driver, short_wait):
     #short_wait.until(EC.element_to_be_clickable((By.XPATH, "//button[text()=\"Let's Go!\"]"))).click()
     print("Setup complete! Ready to use the Playground.\n")
 
-########################################################
-#driver.implicitly_wait(3)
 
 def query_model(driver, question, short_wait, long_wait):
 
@@ -115,7 +105,7 @@ def query_model(driver, question, short_wait, long_wait):
 
     print("Waiting for response and scrolling down to the button...")
     olmo_trace_button = long_wait.until(
-        EC.element_to_be_clickable((By.XPATH, "//button[@aria-label='Copy']/following-sibling::button"))
+        EC.element_to_be_clickable((By.XPATH, "//button[@aria-label='Copy']/following-sibling::button[2]"))
     )
     return olmo_trace_button
 
@@ -145,87 +135,32 @@ def open_olmotrace_window(driver, olmo_trace_button):
     olmo_trace_button.click()
     print("Successfully opened the OLMoTrace window.")
 
-def collecting_urls(driver, very_short_wait, short_wait, long_wait):
+def select_model(driver, model_name, short_wait):
+    # --- Click the Model Selector Button ---
+    print("Clicking the model selector button...")
 
-    print("Reading the URLs...")
-    # --- 4. Loop Through Documents and Extract URLs ---
-    extracted_urls = []
-    # First, find out how many "View Document" buttons there are.
-    view_document_buttons = long_wait.until(
-        EC.presence_of_all_elements_located((By.XPATH, "//button[text()='View Document']"))
+    # Find the button by its unique role and wait for it to be clickable.
+    model_selector_button = short_wait.until(
+        EC.element_to_be_clickable((By.XPATH, "//div[@role='combobox']"))
     )
-    num_buttons = len(view_document_buttons)
-    print(f"Found {num_buttons} documents to process.")
 
-    # Use an index-based loop to avoid stale element errors
-    for i in range(num_buttons):
-        print(f"Processing document {i + 1}/{num_buttons}...")
-        # Re-find the buttons on each iteration to get a fresh list
-        all_buttons = short_wait.until(
-            EC.presence_of_all_elements_located((By.XPATH, "//button[text()='View Document']"))
+    # Click the button to open the dropdown menu.
+    model_selector_button.click()
+    print("Model selector dropdown opened.")
+
+    print(f"Attempting to select model: {model_name}")
+    try:
+        # This XPath finds the list item ('li') that contains a paragraph ('p') with the exact model name.
+        model_locator = (By.XPATH, f"//li[@role='option' and .//p[text()='{model_name}']]")
+
+        model_option = short_wait.until(
+            EC.element_to_be_clickable(model_locator)
         )
-        # Scroll the button into view and click it
-        button_to_click = all_buttons[i]
-        driver.execute_script("arguments[0].scrollIntoView(true);", button_to_click)
-        time.sleep(0.5) # Small pause to ensure scroll completes
-        button_to_click.click()
+        model_option.click()
+        print(f"Successfully selected {model_name}.")
+    except Exception as e:
+        print(f"Could not select model '{model_name}'. Error: {e}")
 
-        # --- START OF CONDITIONAL LOGIC ---
-        try:
-            link_element = very_short_wait.until(
-                EC.presence_of_element_located((By.XPATH, "//span[contains(text(), 'URL:')]"))
-            )
-            url = link_element.get_attribute('href')
-            print(url)
-            if url:
-                extracted_urls.append(url)
-                print(f"  > Found URL: {url}")
-        
-        except TimeoutException:
-            # If the element isn't found after 5 seconds, this block will run.
-            print("  > No URL found on this page.")
-        
-        finally:
-            # This block will ALWAYS run, whether a URL was found or not.
-            print("  > Navigating back to the list...")
-            back_button = very_short_wait.until(
-                EC.element_to_be_clickable((By.XPATH, "//button[contains(@aria-label, 'close')]"))
-            )
-            back_button.click()
-            # Wait for the list to be visible again before the next loop
-            short_wait.until(EC.visibility_of_element_located((By.XPATH, "//button[text()='View Document']")))
-        # --- END OF CONDITIONAL LOGIC ---
-    
-    # --- 5. Print Final Results ---
-    print("\n--- All URLs Extracted ---")
-    
-    return extracted_urls
-
-# test
-#driver = webdriver.Chrome()
-#driver.get("https://playground.allenai.org/")
-#driver.maximize_window()
-#
-#very_short_wait = WebDriverWait(driver, 2)
-#short_wait = WebDriverWait(driver, 10)
-#long_wait = WebDriverWait(driver, 60)
-#
-#complete_setup(short_wait)
-#
-#question = "Give me 3 ideas to teach fractions to Grade 5 students"
-#olmo_trace_button = query_model(question, short_wait, long_wait)
-#
-#answer_text = retrieving_answer_text(short_wait)
-#
-#open_olmotrace_window(olmo_trace_button)
-#
-##extracted_urls = collecting_urls(very_short_wait, short_wait, long_wait)
-#
-#time.sleep(5)
-#
-#driver.quit()
-
-# %%
 
 def query_olmo_pipeline(question, model, save_output, save_olmo_trace, max_documents=999):
     
@@ -242,6 +177,10 @@ def query_olmo_pipeline(question, model, save_output, save_olmo_trace, max_docum
     
     try:
         complete_setup(driver, short_wait)
+
+        if model != "OLMo 2 32B Instruct":
+            select_model(driver, model, short_wait)
+
         olmo_trace_button = query_model(driver, question, short_wait, long_wait)
 
         if save_output:
@@ -249,10 +188,10 @@ def query_olmo_pipeline(question, model, save_output, save_olmo_trace, max_docum
 
         if save_olmo_trace:
             open_olmotrace_window(driver, olmo_trace_button)
-            # You would need to define record_olmo_trace()
-            # final_dict["OLMoTrace_URLs"] = collecting_urls(driver, short_wait, long_wait)
+
+            # Recording data inside OLMoTrace docs
             olmo_trace_docs = record_olmo_trace(driver = driver,
-                                               extract_url=False,
+                                               extract_url=True,
                                                very_short_wait=very_short_wait,
                                                short_wait=short_wait,
                                                long_wait=long_wait,
@@ -346,34 +285,43 @@ def record_olmo_trace(driver, extract_url, very_short_wait, short_wait, long_wai
         document_url = document_source_element.get_attribute('href')
         olmo_trace_doc_i['URL doc'] = document_url
 
-        # 4) Extract the Text from the Blockquote ---
-        print("   Comparing output to corpus document...")
+        # 4) Get the URL of training corpus
+        if extract_url:
+            pattern = r"URL:\s*(.+)"
+            match = re.search(pattern, title_element.text)
 
-        # Wait for the blockquote element to be visible
-        blockquote_element = short_wait.until(
-            EC.visibility_of_element_located((By.TAG_NAME, "blockquote"))
+            if match:
+                url = match.group(1)
+                print(f"    >Found URL: {url}")
+                olmo_trace_doc_i['URL'] = url
+            else:
+                olmo_trace_doc_i['URL'] = None
+
+        # 5) Extract the Text from the Blockquote ---
+        print("Extracting text from the document...")
+
+        # Use the (//...)[last()] syntax to get the last blockquote
+        blockquote_element = long_wait.until(
+            EC.visibility_of_element_located((By.XPATH, "(//blockquote)[last()]"))
         )
 
-        # Get all the text content from the element
-        #document_text = blockquote_element
-        #print(f"Length doc: {len(document_text)}")
-        #print(f"Document text: {document_text}\n")
-        ## Identify the text that is verbatim from the corpus, if there is <strong> in text
-        #if "<strong>" in document_text:
-        #    # take the text that is between <strong> and </strong>
-        #    start = document_text.index("<strong>") + len("<strong>")
-        #    end = document_text.index("</strong>")
-        #    verbatim_text = document_text[start:end]
-        #else:
-        #    verbatim_text = ""
-        #olmo_trace_doc_i['Verbatim text from corpus'] = verbatim_text
+        # Use the .text property to get all the clean, visible text
+        all_document_text = blockquote_element.text
 
-        # 5) Reading the url
-        if extract_url:
-            print("   Extracting URL...")
-            url = reading_url(driver, very_short_wait)
-            if url:
-                olmo_trace_doc_i['URL'] = url
+        # add to dict if text
+        if all_document_text:
+            olmo_trace_doc_i['Full text'] = all_document_text
+
+        # --- 2. Extract Text ONLY from the <strong> tags ---
+        print("\nExtracting only the verbatim text...")
+        # Use find_elements (plural) to get a list of all <strong> tags within the blockquote
+        strong_elements = blockquote_element.find_elements(By.TAG_NAME, "strong")
+
+        # Loop through the list of <strong> elements and get the text from each one
+        verbatim_texts = [strong.text for strong in strong_elements]
+
+        if len(verbatim_texts) > 0:
+            olmo_trace_doc_i['Verbatim text'] = verbatim_texts
 
         # Closes the window of Doc i
         #print("  > Navigating back to the list...")
@@ -394,28 +342,27 @@ def record_olmo_trace(driver, extract_url, very_short_wait, short_wait, long_wai
     return olmo_trace_docs
 
 # %%
-
-olmo_model = [
-    "OLMo 2 32B Instruct",
-    #"OLMo 2 13B Instruct",
-    #"OLMoE 1B 7B Instruct",
-]
-
-question = "Give me 3 ideas to teach fractions to Grade 5 students"
-
-final_dict = query_olmo_pipeline(question,
-                                 model=olmo_model[0],
-                                 save_output=True,
-                                 save_olmo_trace=True,
-                                 max_documents=5
-                                 )
-
-# %%
-# print as json with indent 4
-print(json.dumps(final_dict, indent=4))
-
-# %%
-# save json
-#path_file = "./../OLMoTrace experiments/output.json"
+#olmo_model = [
+#    "OLMo 2 32B Instruct",
+#    "OLMo 2 13B Instruct",
+#]
+#
+#question = "Give me 3 ideas to teach fractions to Grade 5 students"
+##question="Where was Napoleon born?"
+#
+#final_dict = query_olmo_pipeline(question,
+#                                 model=olmo_model[1],
+#                                 save_output=True,
+#                                 save_olmo_trace=True,
+#                                 max_documents=3
+#                                 )
+#
+## %%
+## print as json with indent 4
+#print(json.dumps(final_dict, indent=4))
+#
+## %%
+## save json
+#path_file = "./../localization/OLMoTrace experiments/output_complete.json"
 #json.dump(final_dict, open(path_file, "w"), indent=4)
-# %%
+## %%
