@@ -1,6 +1,7 @@
 # %%
 import numpy as np
 import pandas as pandas
+import datetime
 # Import necessary classes from selenium
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -8,10 +9,11 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.keys import Keys
 import time
 import re
 import json
-
+import pyperclip
 
 # %%
 def complete_setup(driver, short_wait):
@@ -77,33 +79,42 @@ def complete_setup(driver, short_wait):
     #short_wait.until(EC.element_to_be_clickable((By.XPATH, "//button[text()=\"Let's Go!\"]"))).click()
     print("Setup complete! Ready to use the Playground.\n")
 
-
 def query_model(driver, question, short_wait, long_wait):
-
-    # Query the OLMo model
+    """
+    Finds the text box, types the question, waits for the text to appear,
+    and then submits the query.
+    """
+    # 1. Find the text box where the user can type
+    text_box_locator = (By.CSS_SELECTOR, "textarea[placeholder^='Message OLMo']")
     text_box = short_wait.until(
-        EC.element_to_be_clickable((By.CSS_SELECTOR, "textarea[placeholder^='Message OLMo']"))
+        EC.element_to_be_clickable(text_box_locator)
     )
 
-    # Below, good practices to make sure the query is typed in correctly
-    # 1. Click the element to ensure it has focus.
+    # Click, clear, and send the text
+    #text_box.click()
+    #text_box.clear()
+    #text_box.send_keys(cleaned_question)
+
+    # --- NEW COPY-PASTE LOGIC ---
+    print("Simulating a copy-paste action...")
+    # 1. Put the full, multi-line question onto the system clipboard.
+    pyperclip.copy(question)
+    
+    # 2. Click the text box to focus on it.
     text_box.click()
-    # 2. Clear the field to remove any default text (good practice).
-    text_box.clear()
-    # 3. Type the text
-    #text_box.send_keys("How to teach fractions to Grade 5 students?")
-    #text_box.send_keys("What is the capital of France?")
-    text_box.send_keys(question)
-
-    # 4. Find the submit button and click it.
-    submit_button = short_wait.until(
-        EC.element_to_be_clickable((By.CSS_SELECTOR, "button[aria-label='Submit prompt']"))
-    )
+    
+    # 3. Send the "paste" command (Ctrl+V).
+    #    For Mac, use Keys.COMMAND instead of Keys.CONTROL.
+    ActionChains(driver).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
+    print("Paste command sent.")
+    
+    # Now wait for the submit button to become enabled and click it
+    submit_button = short_wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[aria-label='Submit prompt']")))
     submit_button.click()
-
     print("Successfully sent the question.")
 
-    print("Waiting for response and scrolling down to the button...")
+    # The rest of your function to wait for the response
+    print("Waiting for response...")
     olmo_trace_button = long_wait.until(
         EC.element_to_be_clickable((By.XPATH, "//button[@aria-label='Copy']/following-sibling::button[2]"))
     )
@@ -121,7 +132,6 @@ def retrieving_answer_text(driver, short_wait):
     answer_text = response_element.get_attribute('aria-label')
 
     return answer_text
-
 
 def open_olmotrace_window(driver, olmo_trace_button):
 
@@ -162,8 +172,8 @@ def select_model(driver, model_name, short_wait):
         print(f"Could not select model '{model_name}'. Error: {e}")
 
 
-def query_olmo_pipeline(question, model, save_output, save_olmo_trace, max_documents=999):
-    
+def query_olmo_pipeline(full_question, question, model, save_output, save_olmo_trace, max_documents=999, country=None):
+
     driver = webdriver.Chrome()
     driver.get("https://playground.allenai.org/")
     driver.maximize_window()
@@ -173,18 +183,21 @@ def query_olmo_pipeline(question, model, save_output, save_olmo_trace, max_docum
     short_wait = WebDriverWait(driver, 10)
     long_wait = WebDriverWait(driver, 60)
 
-    final_dict = {"Question": question, "Model": model}
-    
+    final_dict = {"Query": full_question, "Question": question, "SP localized": country, "Model": model}
+
     try:
         complete_setup(driver, short_wait)
 
         if model != "OLMo 2 32B Instruct":
             select_model(driver, model, short_wait)
 
-        olmo_trace_button = query_model(driver, question, short_wait, long_wait)
+        olmo_trace_button = query_model(driver, full_question, short_wait, long_wait)
 
         if save_output:
             final_dict["Answer"] = retrieving_answer_text(driver, short_wait)
+        
+        # add date we ran the query with day and hour
+        final_dict["run_date"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         if save_olmo_trace:
             open_olmotrace_window(driver, olmo_trace_button)
@@ -365,4 +378,4 @@ def record_olmo_trace(driver, extract_url, very_short_wait, short_wait, long_wai
 ## save json
 #path_file = "./../localization/OLMoTrace experiments/output_complete.json"
 #json.dump(final_dict, open(path_file, "w"), indent=4)
-## %%
+# %%
