@@ -19,51 +19,48 @@ from tqdm import tqdm
 from collections import Counter
 
 HERE = Path(__file__).resolve().parent
-LOCALIZATION_FOLDER = HERE
 dotenv_path = HERE / ".env"
 print(dotenv_path)
 load_dotenv(dotenv_path, override=True)
 
 gemini_api_key = os.getenv("GEMINI_API_KEY")
 
+
 # %%
 #### CODE FOR PAIRWISE COMPARISON ####
 
-def create_formatted_blocks(df, chunk_size):
+def create_formatted_blocks(df, pair_column_names):
     """
     Generates a list of formatted string blocks from a dataframe.
 
     Args:
         dataframe (pd.DataFrame): DataFrame with 'UserQuestion', 'ModelAnswerLocalized', 'ModelAnswerNonLocalized'.
-        chunk_size (int): The number of pairs to include
+        pair_column_names (list): List of two column names to compare.
 
     Returns:
         str: A formatted string block containing pairs of responses.
     """
     all_blocks = []
 
-    if chunk_size >= len(df):
-        print(f"Warning: chunk_size ({chunk_size}) is greater than or equal to the number of rows in the DataFrame ({len(df)}). Using the entire DataFrame.")
+    # make sure the index is reset
+    df = df.reset_index(drop=True)
 
-    df_chunked = df.head(chunk_size).reset_index(drop=True)  # Limit to the first 'chunk_size' rows for each block
-
-
-    for index, row in df_chunked.iterrows():
+    for index, row in df.iterrows():
         # Format each pair according to the recommended structure
         pair_str = (
             # Add a Pair Header
             f"## Pair {index + 1}:\n\n"
-            f"**Answer Group A:** {row['ModelAnswerLocalized']}\n\n"
-            f"**Answer Group B:** {row['ModelAnswerNonLocalized']}"
+            f"**Answer Group A:** {row[pair_column_names[0]]}\n\n"
+            f"**Answer Group B:** {row[pair_column_names[1]]}"
             )
         all_blocks.append(pair_str)
 
-    # Join all 20 formatted pairs with a separator for the final block
+    # Join all pairs with a separator for the final block
     formatted_block = "\n\n--------------------------------------------------\n\n".join(all_blocks)
 
     return formatted_block
 
-def run_pairwise_comparison_evaluation(df_pairs, model="gemini-2.5-flash-lite", chunk_size=20):
+def run_pairwise_comparison_evaluation(df_pairs, pair_column_names, model):
     '''
     Run pairwise comparison evaluation on the DataFrame using the provided evaluation prompt.
     
@@ -78,53 +75,69 @@ def run_pairwise_comparison_evaluation(df_pairs, model="gemini-2.5-flash-lite", 
     # Initialize Google Generative AI client
     client = genai.Client(api_key=gemini_api_key)
 
-    # Prepare the formatted block of data
-    #formatted_block = "\n\n".join(
-    #    [f"**Query:** {row['UserQuestion']}\n\n**Group A Response:** {row['ModelAnswerLocalized']}\n\n**Group B Response:** {row['ModelAnswerNonLocalized']}" 
-    #     for _, row in df_pairs.iterrows()]
-    #)
-    formatted_block = create_formatted_blocks(df_pairs, chunk_size=chunk_size)
+    formatted_block = create_formatted_blocks(df_pairs, pair_column_names)
 
-    print(formatted_block)
 
-    eval_prompt = f'''
-    ### ROLE ###
-    You are a meticulous social science analyst. Your task is to analyze textual data from two groups, "Group A" and "Group B", to identify the characteristic behavioral and content differences between them.
+    eval_prompt = f"""
+       ### ROLE ###
+       You are a meticulous social science analyst. Your task is to analyze textual data from two groups, "Group A" and "Group B". 
+       Your goal is to identify patterns in Group A's responses that are **distinctive to Group A**
+       (i.e., do not also strongly apply to Group B) and, when possible, infer the underlying world-model differences that might explain them.
 
-    ### GOAL ###
-    To perform a pairwise comparison of responses from Group A and Group B for each query. Based on these comparisons, you will identify and describe noteworthy differences that appear to distinguish the two groups. This includes both widespread patterns and more subtle or emerging distinctions.
+       ### GOAL ###
+       From multiple responses in each group:
+       1. Find recurring patterns in Group A's responses that are **absent or notably weaker in Group B**.
+       2. When possible, infer the **world model** (beliefs, assumptions, perspectives) in Group A that could explain those patterns.
+       3. When world-model inference is not possible, still include meaningful empirical-only differences if they are distinctive to Group A.
 
-    ### INSTRUCTIONS ###
-    1.  For each query, directly compare the response from Group A with the response from Group B.
-    2.  Identify specific differences in their content, tone, perspective, assumptions, and reasoning.
-    3.  After analyzing the individual pairs, synthesize your findings. Group similar observations together to describe general patterns of difference. **Note these patterns even if they don't appear in every single pair.**
-    4.  Prioritize meaningful semantic differences over superficial formatting ones (e.g., focus on *what* is said and *how* it is framed, rather than the simple use of bolding or bullet points).
+       ### INSTRUCTIONS ###
+       1. Read all provided responses from both groups.
+       2. Identify traits that:
+       - Appear in **more than one Group A response**, and 
+       - Are **absent or significantly less frequent** in Group B's responses.
+       3. For each pattern:
+       - Prefer **world-model-oriented differences** (beliefs/assumptions that explain the pattern). 
+       - If a world model cannot be reliably inferred, produce an **empirical difference** that is still distinctive to Group A.
+       4. The **Difference** field must:
+       - Be a one-sided statement about Group A (no "vs" phrasing). 
+       - Reflect the world model if available; otherwise, the distinctive empirical trait.
+       5. Support each difference with:
+       - At least **two verbatim quotes** from different Group A responses showing the pattern.
+       6. Specificity requirement:
+       When describing a difference, avoid broad categories (e.g., “uses more examples”, “is more formal”) and instead identify
+       the exact types or domains of content involved, and if possible how it connects to the world model.
+       7. Explicitly exclude differences that are:
+       - Purely about length, brevity, conciseness, or verbosity. 
+       - Generic tone/style descriptors without thematic content (e.g., “more formal”, “more casual”, “more detailed”). 
+       - Differences that apply equally to both groups.
 
-    ### INPUT DATA ###
-    The data below contains pairs of responses to the same query.
+       **Good Example (world-model oriented):**
+       Difference: “interprets challenges as opportunities for experimentation”
+       Difference description: “Multiple responses from Group A describe obstacles as chances to try new methods ('tested a new approach when it failed', 'treated it as a trial run'), while Group B focuses on minimizing risk.”
+       Evidence (Group A): “When the first attempt didn't work, we tried something completely different.”
+       Evidence (Group A): “We saw the setback as a perfect trial run for the next idea.”
 
-    {formatted_block}
+       **Good Example (empirical):** 
+       - Difference: “frequently uses humor to frame serious topics” 
+       - Difference description: “Group A responses often include jokes or playful language in discussions of serious issues; Group B responses remain formal.” 
+       - Evidence (Group A): “If the roof falls in, well call it an open-air renovation.” 
+       - Evidence (Group A): “We'll fix it—after we laugh about it.” 
 
-    ### YOUR TASK ###
-    Based on your comparative analysis, generate a list of characteristic differences between Group A and Group B. Your list should capture the most significant distinctions, but also **include more nuanced or less frequent patterns that appear to be indicative of a difference.**
+       **Bad Example:**
+       - Difference: “is geared towards teaching” (this is bad because it applies equally to both A and B)
 
-    For each characteristic difference you identify, you must provide:
-    1.  **Difference:** A concise title for the difference (e.g., "Approach to Risk", "Level of Formality").
-    2.  **Analysis:** A brief explanation of the difference, describing how Group A and Group B contrast on this point.
-    3.  **Evidence:** A pair of short, verbatim snippets—one from Group A and one from Group B from the same query—that clearly illustrates this contrast.
+       {formatted_block}
 
-    ### OUTPUT FORMAT ###
-    Use the following format for each identified difference:
+       ### YOUR TASK ###
+       Generate a list of recurring differences that describe **only** how Group A's responses differ from Group B's. 
+       For each difference, provide:
+       1. **Difference:** [One-sided statement about Group A's world model, or distinctive empirical trait] 
+       2. **Difference description:** [Recurring, observable trait in Group A's responses that supports the difference] 
+       3. **Evidence (Group A):** "[Quote]" 
+       4. **Evidence (Group A):** "[Quote]" 
 
-    **Difference:** [Concise title of the difference]
-    * **Analysis:** [Your explanation of how the two groups differ on this point.]
-    * **Evidence (Group A):** "[Verbatim quote from a Group A response]"
-    * **Evidence (Group B):** "[Verbatim quote from the corresponding Group B response that shows the contrast]"
-
-    ---
-    Your analysis:
-    '''
-
+    """
+    
     # Generate content using the model
     response = client.models.generate_content(
         model=model,
@@ -133,114 +146,74 @@ def run_pairwise_comparison_evaluation(df_pairs, model="gemini-2.5-flash-lite", 
     
     return response.text
 
-
-
-
-# %%
-
-#### LOAD DATA ####
-
-df_pairs = pd.read_csv(LOCALIZATION_FOLDER / "query_pairs_by_subject_gemini_2p5_flash.csv")
-df_pairs.head()
-
-# %%
-#df_pairs_subject = df_pairs[df_pairs['subject'] == '[[Natural Sciences]]'].reset_index(drop=True)
-#
-#formatted_block = create_formatted_blocks(df_pairs, chunk_size=5)
-#print("Formatted block for evaluation:")
-#print(formatted_block)
-
-
-# %%
-# Run pairwise comparison evaluation subject per subject
-
-eval_results = {}
-
-for subject in df_pairs['subject'].unique():
-    print(f"Running evaluation for subject: {subject}")
-    df_pairs_subject = df_pairs[df_pairs['subject'] == subject].reset_index(drop=True)
-    
-    # Run evaluation
-    eval_result = run_pairwise_comparison_evaluation(df_pairs_subject, model="gemini-2.5-flash", chunk_size=20)
-    
-    # Store results
-    eval_results[subject] = eval_result
-    break
-
-# %%
-# Print evaluation results for each subject
-for subject, result in eval_results.items():
-    print(f"Evaluation results for subject: {subject}")
-    print(result)
-    print("\n" + "="*80 + "\n")
-
-# %%
-# save as json
-output_file = LOCALIZATION_FOLDER / "json_evals/pairwise_comparison_evaluation_by_subject_gemini_2p5_flash.json"
-with open(output_file, 'w') as f:
-    json.dump(eval_results, f, indent=4)
-print(f"Saved evaluation results to {output_file}")
-
-
-
-
-
-# %%
-# Scale up the experiment, process the json files
-
 # Run pairwise comparison per subject or functionality
 def scale_up_pairwise_comparison_evaluation(df_pairs,
+                                            pair_column_names,
                                             model,
                                             split_by,
-                                            chunk_size=20,
-                                            save_to_json=False):
+                                            chunk_size,
+                                            save_to_json=False,
+                                            output_folder=None
+                                            ):
     '''
     Scale up pairwise comparison evaluation by splitting the DataFrame by subject or functionality and running evaluations in chunks.
     Args:
         df_pairs (pd.DataFrame): DataFrame containing pairs of responses.
+        pair_column_names (list): List of column names to use for pairing.
         model (str): Model to use for generation.
         split_by (str): Column to split the DataFrame by ('subject' or 'functionality').
         chunk_size (int): Number of pairs to include in each evaluation chunk.
-        save_to_json (bool): Whether to save the evaluation results to JSON file for each subject or functionality.
+        save_to_json (bool): Whether to save the evaluation results to JSON file
     Returns:
-        None: The function saves the evaluation results to JSON files if `save_to_json` is True.
+        json_file: Dictionary containing all evaluation results
     '''
 
-    for split_value in df_pairs[split_by].unique():
+    # Create a folder for the evaluation results if it doesn't exist
+    if save_to_json:
+        os.makedirs(output_folder, exist_ok=True)
 
-        # Create a folder for the evaluation results if it doesn't exist
-        if save_to_json:
-            output_folder = LOCALIZATION_FOLDER / f"json_evals/pairwise_comparison_eval_{model}_{split_by}_{split_value}"
-            output_folder.mkdir(parents=True, exist_ok=True)
+    json_file = {}
+
+    for split_value in df_pairs[split_by].unique():
 
         print(f"Running evaluation for {split_by}: {split_value}")
         
         # Filter DataFrame by the current split value
         df_filtered = df_pairs[df_pairs[split_by] == split_value].reset_index(drop=True)
         
+        json_file_chunks = {}
+
         # Process in chunks
         for start in range(0, len(df_filtered), chunk_size):
+
             end = start + chunk_size
             #print(start, end)
             df_chunk = df_filtered.iloc[start:end]
 
-            # Break if df does not have the full chunk size
-            if len(df_chunk) < chunk_size:
-                print(f"Skipping last chunk from {start} to {end} as it has less than {chunk_size} pairs.")
-                continue
-            
-            # Run evaluation for the chunk
-            eval_result = run_pairwise_comparison_evaluation(df_chunk, model=model, chunk_size=chunk_size)
+            # check that df_chunk has the required columns and the correct length
+            if all(col in df_chunk.columns for col in pair_column_names) and len(df_chunk) == chunk_size:
+                # Run evaluation for the chunk
+                print(f"Running evaluation for chunk {start // chunk_size + 1}")
+                eval_result = run_pairwise_comparison_evaluation(df_chunk, pair_column_names, model)
+                json_file_chunks[f"chunk_{start // chunk_size + 1}"] = eval_result
+            else: 
+                if len(df_chunk) < chunk_size:
+                    print(f"   >Chunk {start // chunk_size + 1} is smaller than the specified chunk size.")
+                if not all(col in df_chunk.columns for col in pair_column_names):
+                    print(f"   >Chunk {start // chunk_size + 1} is missing some required columns.")
 
-            # save as json each chunk
-            if save_to_json:
-                output_file = output_folder / f"pairwise_comparison_eval_{split_value}_chunk_{start//chunk_size}.json"
-                with open(output_file, 'w') as f:
-                    json.dump(eval_result, f, indent=4)
-                print(f"Saved evaluation results for {split_by}: {split_value} chunk {start//chunk_size} to {output_file}")
+        # save as json with all the chuncks together
+        if save_to_json:
+            output_file = f"./{output_folder}/pairwise_comparison_eval_{split_value}.json"
+            with open(output_file, 'w') as f:
+                json.dump(json_file_chunks, f, indent=4)
+            print(f"Saved evaluation results for {split_by}: {split_value}")
         print(f"Completed evaluation for {split_by}: {split_value}")
         print("="*80)
-        break
+
+        json_file[split_value] = json_file_chunks
+
+    return json_file
 
 
 def retrieve_all_differences(json_files_folder):
@@ -338,29 +311,92 @@ def cluster_differences_llm(differences_dict, model="gemini-2.5-flash"):
     return response.text
 
 
+
+
+# %%
+#### LOAD DATA ####
+df_pairs = pd.read_csv("./../localization/sampled_queries_Maxime_with_answers/query_pairs_Maxime_sample_1.csv")
+print(df_pairs.info())
+print(df_pairs['functionality'].value_counts())
+df_pairs.head()
+
 # %%
 eval_model = "gemini-2.5-flash"
-chunk_per_eval = 10
-split_by = "subject"
-#split_by = "functionality"
+chunk_per_eval = 20
+split_by = "functionality"
 
-subjects_list = df_pairs['subject'].unique().tolist()
-#functionality_list = df_pairs['functionality'].unique().tolist()
-
-print(f"Subjects: {subjects_list}")
-#print(f"Functionality: {functionality_list}")
-
-scale_up_pairwise_comparison_evaluation(df_pairs,
+json_all_evals = scale_up_pairwise_comparison_evaluation(df_pairs,
+                                        pair_column_names=["ModelAnswerLocalized_SierraLeone",
+                                                           "ModelAnswerNonLocalized"],
                                         model=eval_model,
                                         split_by=split_by,
                                         chunk_size=chunk_per_eval,
-                                        save_to_json=True)
-# %%
-# Retrieve all differences from the JSON files
-json_files_folder = "./json_evals/pairwise_comparison_eval_gemini-2.5-flash_subject_[[Pedagogy & Instruction]]"
+                                        save_to_json=True,
+                                        output_folder="test_folder")
 
-all_differences = retrieve_all_differences(json_files_folder)
+
+
+
 
 # %%
-diff_clusters = cluster_differences_llm(all_differences, model="gemini-2.5-flash")
-print(diff_clusters)
+# Run cell below to summarize differences in a csv
+def summarize_json_to_dataframe(json_content):
+    """
+    Parses JSON content to extract 'Difference' and 'Difference description'
+    fields and returns the result as a pandas DataFrame.
+
+    Args:
+        json_content (dict): The loaded JSON data as a Python dictionary.
+
+    Returns:
+        pandas.DataFrame: A DataFrame containing the extracted data with columns
+                          ["chunk number", "Difference", "Difference description"].
+    """
+    # Regex to find the "Difference" and "Difference description" pairs.
+    pattern = re.compile(
+        r'\*\*Difference:\*\*\s*(.*?)\s*\*\*Difference description:\*\*\s*(.*?)(?=\*\*Evidence|\n\s*[\d•*]|\Z)',
+        re.DOTALL | re.IGNORECASE
+    )
+
+    # A list to hold all the extracted row data
+    extracted_data = []
+
+    # Iterate through each chunk (e.g., "chunk_1", "chunk_2") in the JSON
+    for chunk_key, chunk_text in json_content.items():
+        # Extract the number from the chunk key (e.g., "1" from "chunk_1")
+        chunk_number = chunk_key.split('_')[-1]
+        
+        # Find all matching pairs in the current chunk's text
+        matches = pattern.findall(chunk_text)
+        
+        # For each pair found, create a dictionary and add it to our list
+        for match in matches:
+            difference = match[0].strip()
+            description = match[1].strip()
+            
+            extracted_data.append({
+                "chunk number": chunk_number,
+                "Difference": difference,
+                "Difference description": description
+            })
+
+    # Create the pandas DataFrame from the list of dictionaries
+    df = pd.DataFrame(extracted_data)
+    
+    # Ensure the column order is correct
+    df = df[["chunk number", "Difference", "Difference description"]]
+    
+    return df
+
+# %%
+# import json if needed
+#with open("test_folder/pairwise_comparison_eval_Concept Clarification and Factual Information.json", "r") as f:
+#    json_all_evals = json.load(f)
+#
+print(json.dumps(json_all_evals, indent=2))
+# %%
+# 2. Call the function with your data
+summary_df = summarize_json_to_dataframe(json_all_evals["Concept Clarification and Factual Information"])
+print(summary_df.shape)
+summary_df.head()
+# %%
